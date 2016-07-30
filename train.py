@@ -48,10 +48,6 @@ def build_network(input_shape, output_shape):
 
 class LearningAgent(object):
     def __init__(self, action_space, replay_size=32, screen=(84, 84), switch_rate=200):
-        # from keras.models import Sequential
-        # from keras.layers import InputLayer, Convolution2D, Flatten, Dense
-        # from keras.optimizers import RMSprop
-
         self.screen = screen
         self.input_depth = 1
         self.past_range = 3
@@ -99,9 +95,14 @@ class LearningAgent(object):
         return False
 
 
-def learn_proc(mem_queue, weight_dict, agent, save_rate=2000, learning_rate=0.0001, batch_size=64, checkpoint=0):
+def learn_proc(mem_queue, weight_dict, agent):
     import os
     pid = os.getpid()
+    # -----
+    save_rate = args.save_rate
+    learning_rate = args.learning_rate
+    batch_size = args.batch_size
+    checkpoint = args.checkpoint
     # -----
     if checkpoint > 0:
         agent.action_value_train.load_weights('model-%d.h5' % (checkpoint,))
@@ -138,12 +139,6 @@ def learn_proc(mem_queue, weight_dict, agent, save_rate=2000, learning_rate=0.00
 
 class ActingAgent(object):
     def __init__(self, action_space, screen=(84, 84)):
-        # import os
-        # os.environ['THEANO_FLAGS'] = 'floatX=float32,device=cpu'
-        # from keras.models import Sequential
-        # from keras.layers import InputLayer, Convolution2D, Flatten, Dense
-        # from keras.optimizers import RMSprop
-
         self.screen = screen
         self.input_depth = 1
         self.past_range = 3
@@ -179,15 +174,20 @@ class ActingAgent(object):
         return rgb2gray(imresize(data, self.screen))[None, ...]
 
 
-def generate_experience_proc(start, end, epsilon, mem_queue, weight_dict, agent, game):
+def generate_experience_proc(epsilon, mem_queue, weight_dict, agent):
     import os
     pid = os.getpid()
     # -----
+    moves = args.checkpoint
+    procs = args.processes
+    end = args.eps_decay
+    batch_size = args.batch_size
+    # -----
     print(' %5d> Process started with %6.3f' % (pid, epsilon))
     # -----
-    env = gym.make(game)
+    env = gym.make(args.game)
 
-    if start > 0:
+    if moves > 0:
         print(' %5d> Loaded weights from file' % (pid,))
         agent.action_value.load_weights('model-%d.h5' % (start,))
     else:
@@ -197,10 +197,9 @@ def generate_experience_proc(start, end, epsilon, mem_queue, weight_dict, agent,
         agent.action_value.set_weights(weight_dict['weights'])
         print(' %5d> Loaded weights from dict' % (pid,))
 
-    moves = start
     best_score = 0
     last_update = 0
-    procs = args.processes
+    avg_score = deque(maxlen=20)
 
     while True:
         done = False
@@ -224,19 +223,21 @@ def generate_experience_proc(start, end, epsilon, mem_queue, weight_dict, agent,
                 noops = 0
             # -----
             if noops > 30:
-                # mem_queue.put(agent.sars_data(action, -1, observation, False))
                 break
             # -----
             mem_queue.put(agent.sars_data(action, reward, observation, not done))
             # -----
             if moves % (2000 * procs) == 0:
-                print(' %5d> Epsilon: %9.6f; Best score: %4d' % (pid, decayed_epsilon, best_score))
-            if moves % (args.batch_size * args.weight_switch // procs) == 0:
+                print(' %5d> Epsilon: %9.6f; Best score: %4d; Avg scire: %6.2f' % (
+                    pid, decayed_epsilon, best_score, np.mean(avg_score)))
+            if moves % (batch_size * procs) == 0:
                 update = weight_dict.get('update', 0)
                 if update > last_update:
                     last_update = update
                     print(' %5d> Getting weights from dict' % (pid,))
                     agent.action_value.set_weights(weight_dict['weights'])
+        # -----
+        avg_score.append(episode_reward)
 
 
 def init_worker():
@@ -259,12 +260,10 @@ def main():
     try:
         for i in range(args.processes):
             pool.apply_async(generate_experience_proc,
-                             (args.checkpoint, args.eps_decay, eps[i % len(eps)], mem_queue,
-                              weight_dict, acting_agents[i], args.game))
+                             (eps[i % len(eps)], mem_queue, weight_dict, acting_agents[i]))
 
         pool.apply_async(learn_proc,
-                         (mem_queue, weight_dict, learning_agent, args.save_rate,
-                          args.learning_rate, args.batch_size, args.checkpoint))
+                         (mem_queue, weight_dict, learning_agent))
         pool.close()
         pool.join()
 
