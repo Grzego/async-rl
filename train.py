@@ -189,7 +189,7 @@ def generate_experience_proc(epsilon, mem_queue, weight_dict, agent):
 
     if moves > 0:
         print(' %5d> Loaded weights from file' % (pid,))
-        agent.action_value.load_weights('model-%d.h5' % (start,))
+        agent.action_value.load_weights('model-%d.h5' % (moves,))
     else:
         import time
         while 'weights' not in weight_dict:
