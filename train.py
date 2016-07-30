@@ -3,8 +3,9 @@ from skimage.color import rgb2gray
 from keras.models import Sequential
 from keras.layers import InputLayer, Convolution2D, Flatten, Dense
 from keras.optimizers import RMSprop
-from multiprocessing import Process, Queue, Manager, Lock
+from multiprocessing import *
 from collections import deque
+import queue
 import gym
 import numpy as np
 import argparse
@@ -46,7 +47,7 @@ def build_network(input_shape, output_shape):
 # -----
 
 class LearningAgent(object):
-    def __init__(self, action_space, replay_size=32, screen=(84, 84), compilation_lock=None, switch_rate=200):
+    def __init__(self, action_space, replay_size=32, screen=(84, 84), switch_rate=200):
         # from keras.models import Sequential
         # from keras.layers import InputLayer, Convolution2D, Flatten, Dense
         # from keras.optimizers import RMSprop
@@ -62,11 +63,6 @@ class LearningAgent(object):
 
         self.action_value_train.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
         self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
-
-        # Looks like theano functions are compiled on first use
-        if compilation_lock:
-            with compilation_lock:
-                self.action_value.predict(np.zeros((1,) + self.observation_shape))
 
         self.losses = deque(maxlen=100)
         self.q_values = deque(maxlen=100)
@@ -92,9 +88,9 @@ class LearningAgent(object):
         loss = self.action_value_train.train_on_batch(last_observations, targets)
         self.losses.append(loss)
         self.q_values.append(np.max(targets))
-        print '\rIter: %8d; Loss: %9.6f; Min: %9.6f; Max: %9.6f; Avg: %9.6f --- Q-value; Min: %9.6f; Max: %9.6f; Avg: %9.6f' % (
+        print('\rIter: %8d; Loss: %9.6f; Min: %9.6f; Max: %9.6f; Avg: %9.6f --- Q-value; Min: %9.6f; Max: %9.6f; Avg: %9.6f' % (
             self.counter, loss, min(self.losses), max(self.losses), np.mean(self.losses), np.min(self.q_values),
-            np.max(self.q_values), np.mean(self.q_values)),
+            np.max(self.q_values), np.mean(self.q_values)), end='')
         self.weight_switch -= 1
         if self.weight_switch < 0:
             self.weight_switch = self.switch_rate
@@ -103,17 +99,14 @@ class LearningAgent(object):
         return False
 
 
-def learn_proc(action_space, mem_queue, weight_dict, lock, save_rate=2000, learning_rate=0.0001, batch_size=64,
-               checkpoint=0, switch_rate=200):
+def learn_proc(mem_queue, weight_dict, agent, save_rate=2000, learning_rate=0.0001, batch_size=64, checkpoint=0):
     import os
     pid = os.getpid()
-    # -----
-    agent = LearningAgent(action_space, replay_size=batch_size, compilation_lock=lock, switch_rate=switch_rate)
     # -----
     if checkpoint > 0:
         agent.action_value_train.load_weights('model-%d.h5' % (checkpoint,))
         agent.action_value.set_weights(agent.action_value_train.get_weights())
-    print ' %5d> Setting weights in dict' % (pid,)
+    print(' %5d> Setting weights in dict' % (pid,))
     # -----
     weight_dict['update'] = 0
     weight_dict['weights'] = agent.action_value.get_weights()
@@ -128,23 +121,23 @@ def learn_proc(action_space, mem_queue, weight_dict, lock, save_rate=2000, learn
     counter = checkpoint
     agent.counter = counter / batch_size
     while True:
-        counter += 1
-        # -----
         last_obs[index, ...], actions[index], rewards[index], obs[index, ...], not_term[index] = mem_queue.get()
+        # -----
         index = (index + 1) % batch_size
         if index == 0:
             updated = agent.learn(last_obs, actions, rewards, obs, not_term, learning_rate=learning_rate)
             if updated:
-                print ' %5d> Updating weights in dict' % (pid,)
+                print(' %5d> Updating weights in dict' % (pid,))
                 weight_dict['weights'] = agent.action_value.get_weights()
                 weight_dict['update'] += 1
         # -----
+        counter += 1
         if counter % (save_rate * batch_size) == 0:
             agent.action_value_train.save_weights('model-%d.h5' % (counter,), overwrite=True)
 
 
 class ActingAgent(object):
-    def __init__(self, action_space, screen=(84, 84), compilation_lock=None):
+    def __init__(self, action_space, screen=(84, 84)):
         # import os
         # os.environ['THEANO_FLAGS'] = 'floatX=float32,device=cpu'
         # from keras.models import Sequential
@@ -159,17 +152,12 @@ class ActingAgent(object):
         self.action_value = build_network(self.observation_shape, action_space.n)
         self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
 
-        # Looks like theano functions are compiled on first use
-        if compilation_lock:
-            with compilation_lock:
-                self.action_value.predict(np.zeros((1,) + self.observation_shape))
-
         self.action_space = action_space
         self.observations = np.zeros(self.observation_shape)
         self.last_observations = np.zeros_like(self.observations)
 
     def init_episode(self, observation):
-        for _ in xrange(self.past_range):
+        for _ in range(self.past_range):
             self.save_observation(observation)
 
     def sars_data(self, action, reward, observation, not_terminal):
@@ -191,32 +179,29 @@ class ActingAgent(object):
         return rgb2gray(imresize(data, self.screen))[None, ...]
 
 
-def generate_experience_proc(start, end, epsilon, mem_queue, weight_dict, lock, game='Breakout-v0', procs=4):
+def generate_experience_proc(start, end, epsilon, mem_queue, weight_dict, agent, game):
     import os
     pid = os.getpid()
     # -----
-    print ' %5d> Process started with %6.3f' % (pid, epsilon)
+    print(' %5d> Process started with %6.3f' % (pid, epsilon))
     # -----
-
     env = gym.make(game)
-    agent = ActingAgent(env.action_space, compilation_lock=lock)
 
     if start > 0:
-        print ' %5d> Loaded weights from file' % (pid,)
+        print(' %5d> Loaded weights from file' % (pid,))
         agent.action_value.load_weights('model-%d.h5' % (start,))
     else:
         import time
-        while True:
-            if 'weights' in weight_dict:
-                agent.action_value.set_weights(weight_dict['weights'])
-                break
-            time.sleep(1)
-        print ' %5d> Loaded weights from dict' % (pid,)
+        while 'weights' not in weight_dict:
+            time.sleep(0.1)
+        agent.action_value.set_weights(weight_dict['weights'])
+        print(' %5d> Loaded weights from dict' % (pid,))
 
     moves = start
     best_score = 0
-
     last_update = 0
+    procs = args.processes
+
     while True:
         done = False
         episode_reward = 0
@@ -245,40 +230,47 @@ def generate_experience_proc(start, end, epsilon, mem_queue, weight_dict, lock, 
             mem_queue.put(agent.sars_data(action, reward, observation, not done))
             # -----
             if moves % (2000 * procs) == 0:
-                print ' %5d> Epsilon: %9.6f; Best score: %4d' % (pid, decayed_epsilon, best_score)
-            if moves % (50 * procs) == 0:
+                print(' %5d> Epsilon: %9.6f; Best score: %4d' % (pid, decayed_epsilon, best_score))
+            if moves % (args.batch_size * args.weight_switch // procs) == 0:
                 update = weight_dict.get('update', 0)
                 if update > last_update:
                     last_update = update
-                    print ' %5d> Getting weights from dict' % (pid,)
+                    print(' %5d> Getting weights from dict' % (pid,))
                     agent.action_value.set_weights(weight_dict['weights'])
+
+
+def init_worker():
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 def main():
     manager = Manager()
     weight_dict = manager.dict()
-    lock = Lock()
-    mem_queue = Queue(args.queue_size)
+    mem_queue = manager.Queue(args.queue_size)
 
-    start = args.checkpoint
-    end = args.eps_decay
     eps = [0.1, 0.05, 0.3, 0.5]
-
-    procs = [Process(target=generate_experience_proc,
-                     args=(start, end, eps[i % len(eps)], mem_queue, weight_dict, lock, args.game, args.processes))
-             for i in xrange(args.processes)]
-
-    for p in procs:
-        p.start()
-
-    # -----
     env = gym.make(args.game)
-    # -----
-    learn_proc(env.action_space, mem_queue, weight_dict, lock, learning_rate=args.learning_rate,
-               save_rate=args.save_rate, batch_size=args.batch_size, checkpoint=start, switch_rate=args.weight_switch)
+    acting_agents = [ActingAgent(env.action_space) for _ in range(args.processes)]
+    learning_agent = LearningAgent(env.action_space, replay_size=args.batch_size, switch_rate=args.weight_switch)
 
-    for p in procs:
-        p.join()
+    pool = Pool(args.processes + 1, init_worker)
+
+    try:
+        for i in range(args.processes):
+            pool.apply_async(generate_experience_proc,
+                             (args.checkpoint, args.eps_decay, eps[i % len(eps)], mem_queue,
+                              weight_dict, acting_agents[i], args.game))
+
+        pool.apply_async(learn_proc,
+                         (mem_queue, weight_dict, learning_agent, args.save_rate,
+                          args.learning_rate, args.batch_size, args.checkpoint))
+        pool.close()
+        pool.join()
+
+    except KeyboardInterrupt:
+        pool.terminate()
+        pool.join()
 
 
 if __name__ == "__main__":

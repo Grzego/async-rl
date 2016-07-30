@@ -7,7 +7,7 @@ There are many processes (tested with 4, it probably works better with more) whi
 
 ### Usage
 Requirements:
-* [Python 2.7](https://www.python.org/downloads/release/python-2711/)
+* [Python 3.4](https://www.python.org/downloads/)
 * [Keras](http://keras.io/)
 * [Theano](http://deeplearning.net/software/theano/) ([Tensorflow](https://www.tensorflow.org/) would probably work too)
 * [OpenAI (atari-py)](https://gym.openai.com/)
@@ -39,3 +39,10 @@ You can find weights for model in those stages in `sample-weights` folder.
 * [Nervana's Demystifying Deep Reinforcement Learning blog post](http://www.nervanasys.com/demystifying-deep-reinforcement-learning/)
 * [Asynchronous Methods for Deep Reinforcement Learning](http://arxiv.org/pdf/1602.01783v1.pdf)
 * [Playing Atari with Deep Reinforcement Learning](http://arxiv.org/pdf/1312.5602v1.pdf)
+
+#### Feedback
+Because I'm newbie in Reinforcement Learning and Deep Learning, feedback is very welcome :)
+
+#### Important changes
+* Switched from Python 2.7 to Python 3.4
+* Switched to multiprocessing.Pool for better process management (to avoid zombie processes)
