@@ -60,13 +60,13 @@ class LearningAgent(object):
         self.action_value_train = build_network(self.observation_shape, action_space.n)
         self.action_value = build_network(self.observation_shape, action_space.n)
 
+        self.action_value_train.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
+        self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
+
+        # Looks like theano functions are compiled on first use
         if compilation_lock:
             with compilation_lock:
-                self.action_value_train.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
-                self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
-        else:
-            self.action_value_train.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
-            self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
+                self.action_value.predict(np.zeros((1,) + self.observation_shape))
 
         self.losses = deque(maxlen=100)
         self.q_values = deque(maxlen=100)
@@ -83,7 +83,7 @@ class LearningAgent(object):
         targets = self.action_value_train.predict_on_batch(last_observations)
         freeze_q_vals = self.action_value.predict_on_batch(observations)
         # -----
-        # equation = rewards + terminals * discount * freeze_q_vals[self.unroll, np.argmax(train_q_vals, axis=1)]
+        # equation = rewards + not_terminals * discount * np.argmax(freeze_q_vals)
         equation = not_terminals
         equation *= np.max(freeze_q_vals, axis=1)
         equation *= discount
@@ -115,9 +115,8 @@ def learn_proc(action_space, mem_queue, weight_dict, lock, save_rate=2000, learn
         agent.action_value.set_weights(agent.action_value_train.get_weights())
     print ' %5d> Setting weights in dict' % (pid,)
     # -----
-    with lock:
-        weight_dict['update'] = 0
-        weight_dict['weights'] = agent.action_value.get_weights()
+    weight_dict['update'] = 0
+    weight_dict['weights'] = agent.action_value.get_weights()
     # -----
     last_obs = np.zeros((batch_size,) + agent.observation_shape)
     actions = np.zeros(batch_size, dtype=np.int32)
@@ -136,10 +135,9 @@ def learn_proc(action_space, mem_queue, weight_dict, lock, save_rate=2000, learn
         if index == 0:
             updated = agent.learn(last_obs, actions, rewards, obs, not_term, learning_rate=learning_rate)
             if updated:
-                with lock:
-                    print ' %5d> Updating weights in dict' % (pid,)
-                    weight_dict['weights'] = agent.action_value.get_weights()
-                    weight_dict['update'] += 1
+                print ' %5d> Updating weights in dict' % (pid,)
+                weight_dict['weights'] = agent.action_value.get_weights()
+                weight_dict['update'] += 1
         # -----
         if counter % (save_rate * batch_size) == 0:
             agent.action_value_train.save_weights('model-%d.h5' % (counter,), overwrite=True)
@@ -159,12 +157,12 @@ class ActingAgent(object):
         self.observation_shape = (self.input_depth * self.past_range,) + self.screen
 
         self.action_value = build_network(self.observation_shape, action_space.n)
+        self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
 
+        # Looks like theano functions are compiled on first use
         if compilation_lock:
             with compilation_lock:
-                self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')  # clipnorm=1.
-        else:
-            self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')  # clipnorm=1.
+                self.action_value.predict(np.zeros((1,) + self.observation_shape))
 
         self.action_space = action_space
         self.observations = np.zeros(self.observation_shape)
@@ -209,10 +207,9 @@ def generate_experience_proc(start, end, epsilon, mem_queue, weight_dict, lock, 
     else:
         import time
         while True:
-            with lock:
-                if 'weights' in weight_dict:
-                    agent.action_value.set_weights(weight_dict['weights'])
-                    break
+            if 'weights' in weight_dict:
+                agent.action_value.set_weights(weight_dict['weights'])
+                break
             time.sleep(1)
         print ' %5d> Loaded weights from dict' % (pid,)
 
@@ -250,12 +247,11 @@ def generate_experience_proc(start, end, epsilon, mem_queue, weight_dict, lock, 
             if moves % (2000 * procs) == 0:
                 print ' %5d> Epsilon: %9.6f; Best score: %4d' % (pid, decayed_epsilon, best_score)
             if moves % (50 * procs) == 0:
-                with lock:
-                    update = weight_dict.get('update', 0)
-                    if update > last_update:
-                        last_update = update
-                        print ' %5d> Getting weights from dict' % (pid,)
-                        agent.action_value.set_weights(weight_dict['weights'])
+                update = weight_dict.get('update', 0)
+                if update > last_update:
+                    last_update = update
+                    print ' %5d> Getting weights from dict' % (pid,)
+                    agent.action_value.set_weights(weight_dict['weights'])
 
 
 def main():
