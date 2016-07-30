@@ -6,7 +6,7 @@ import argparse
 
 
 class ActingAgent(object):
-    def __init__(self, action_space, screen=(84, 84), compilation_lock=None):
+    def __init__(self, action_space, screen=(84, 84)):
         from keras.models import Sequential
         from keras.layers import InputLayer, Convolution2D, Flatten, Dense
         from keras.optimizers import RMSprop
@@ -25,18 +25,13 @@ class ActingAgent(object):
             Dense(256, activation='relu'),
             Dense(action_space.n, activation='linear'),
         ])
-
-        if compilation_lock:
-            with compilation_lock:
-                self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')  # clipnorm=1.
-        else:
-            self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')  # clipnorm=1.
+        self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')  # clipnorm=1.
 
         self.action_space = action_space
         self.observations = np.zeros((self.input_depth * self.past_range,) + screen)
 
     def init_episode(self, observation):
-        for _ in xrange(self.past_range):
+        for _ in range(self.past_range):
             self.save_observation(observation)
 
     def choose_action(self, observation, epsilon=0.0):
@@ -76,7 +71,7 @@ def main():
     agent.action_value.load_weights(model_file)
 
     game = 1
-    for _ in xrange(10):
+    for _ in range(10):
         done = False
         episode_reward = 0
         noops = 0
@@ -85,7 +80,7 @@ def main():
         observation = env.reset()
         agent.init_episode(observation)
         # play one game
-        print 'Game #%8d; ' % (game,),
+        print('Game #%8d; ' % (game,), end='')
         while not done:
             env.render()
             action = agent.choose_action(observation, epsilon=epsilon)
@@ -98,7 +93,7 @@ def main():
                 noops = 0
             if noops > 100:
                 break
-        print 'Reward %4d; ' % (episode_reward,)
+        print('Reward %4d; ' % (episode_reward,))
         game += 1
     # -----
     if args.evaldir:
