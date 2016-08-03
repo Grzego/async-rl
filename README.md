@@ -1,4 +1,4 @@
-### Variation of Asynchronous RL in Keras (Theano backend) + OpenAI gym
+### Variation of Asynchronous RL in Keras (Theano backend) + OpenAI gym [1-step Q-learning]
 This is a simple variation of [asynchronous reinforcement learning](http://arxiv.org/pdf/1602.01783v1.pdf) written in Python with Keras (Theano backend).
 Instead of many threads training at the same time there are many processes (could be threads but they don't work in python very well) generating experience for a single agent to learn from. 
 
@@ -14,11 +14,11 @@ Requirements:
 
 To start training simply type:
 ```
-python train.py --game Breakout-v0 --processes 16
+python train.py --game=Breakout-v0 --processes=16
 ```
 To see how it plays:
 ```
-python play.py --model sample-weights/model-18h.h5 --game Breakout-v0
+python play.py --model=sample-weights/model-18h.h5 --game=Breakout-v0
 ```
 
 ### Samples
@@ -39,6 +39,8 @@ You can find weights for model in those stages in `sample-weights` folder.
 * [Nervana's Demystifying Deep Reinforcement Learning blog post](http://www.nervanasys.com/demystifying-deep-reinforcement-learning/)
 * [Asynchronous Methods for Deep Reinforcement Learning](http://arxiv.org/pdf/1602.01783v1.pdf)
 * [Playing Atari with Deep Reinforcement Learning](http://arxiv.org/pdf/1312.5602v1.pdf)
+
+#### On different branches you can find other techniques like [n-step Q-learning](https://github.com/Grzego/async-rl/tree/n-step-q-learning).
 
 #### Feedback
 Because I'm newbie in Reinforcement Learning and Deep Learning, feedback is very welcome :)
