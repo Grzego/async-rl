@@ -31,7 +31,8 @@ Sample games after 6h, 12h and 18h of training.
 ![](https://raw.githubusercontent.com/Grzego/multiprocess-rl/master/resources/after-18h-training.gif?token=AFhQOR-kTbupToKnNRenZCWiBEtZBmvhks5XbsWjwA%3D%3D)
 
 ### Note
-You can find weights for model in those stages in `sample-weights` folder.
+* You can find weights for model in those stages in `sample-weights` folder.
+* On different branches you can find other techniques like [n-step Q-learning](https://github.com/Grzego/async-rl/tree/n-step-q-learning).
 
 ### Useful resources
 * [Asyncronous RL in Tensorflow + Keras + OpenAI's Gym](https://github.com/coreylynch/async-rl)
@@ -39,8 +40,6 @@ You can find weights for model in those stages in `sample-weights` folder.
 * [Nervana's Demystifying Deep Reinforcement Learning blog post](http://www.nervanasys.com/demystifying-deep-reinforcement-learning/)
 * [Asynchronous Methods for Deep Reinforcement Learning](http://arxiv.org/pdf/1602.01783v1.pdf)
 * [Playing Atari with Deep Reinforcement Learning](http://arxiv.org/pdf/1312.5602v1.pdf)
-
-#### On different branches you can find other techniques like [n-step Q-learning](https://github.com/Grzego/async-rl/tree/n-step-q-learning).
 
 #### Feedback
 Because I'm newbie in Reinforcement Learning and Deep Learning, feedback is very welcome :)
