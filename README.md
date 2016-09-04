@@ -33,6 +33,7 @@ Sample games after 6h, 12h and 18h of training.
 ### Note
 * You can find weights for model in those stages in `sample-weights` folder.
 * On different branches you can find other techniques like [n-step Q-learning](https://github.com/Grzego/async-rl/tree/n-step-q-learning).
+* Each process sets its own compilation directory for Theano so compilation can take very long time (can be disabled with `--th_comp_fix=True`)
 
 ### Useful resources
 * [Asyncronous RL in Tensorflow + Keras + OpenAI's Gym](https://github.com/coreylynch/async-rl)
