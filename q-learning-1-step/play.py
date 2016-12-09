@@ -9,7 +9,6 @@ class ActingAgent(object):
     def __init__(self, action_space, screen=(84, 84)):
         from keras.models import Sequential
         from keras.layers import InputLayer, Convolution2D, Flatten, Dense
-        from keras.optimizers import RMSprop
 
         self.screen = screen
         self.input_depth = 1
@@ -25,7 +24,7 @@ class ActingAgent(object):
             Dense(256, activation='relu'),
             Dense(action_space.n, activation='linear'),
         ])
-        self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')  # clipnorm=1.
+        self.action_value.compile(optimizer='rmsprop', loss='mse')
 
         self.action_space = action_space
         self.observations = np.zeros((self.input_depth * self.past_range,) + screen)

@@ -13,16 +13,16 @@ parser.add_argument('--game', default='Breakout-v0', help='OpenAI gym environmen
 parser.add_argument('--processes', default=4, help='Number of processes that generate experience for agent',
                     dest='processes', type=int)
 parser.add_argument('--lr', default=0.0001, help='Learning rate', dest='learning_rate', type=float)
-parser.add_argument('--batch_size', default=64, help='Batch size to use during training', dest='batch_size', type=int)
-parser.add_argument('--weight_switch', default=200, help='Number of batches before swapping network weights',
-                    dest='weight_switch', type=int)
+parser.add_argument('--batch_size', default=20, help='Batch size to use during training', dest='batch_size', type=int)
+parser.add_argument('--swap_freq', default=100, help='Number of frames before swapping network weights',
+                    dest='swap_freq', type=int)
 parser.add_argument('--checkpoint', default=0, help='Iteration to resume training', dest='checkpoint', type=int)
-parser.add_argument('--save_rate', default=2000, help='Number of iterations before saving weights', dest='save_rate',
+parser.add_argument('--save_freq', default=250000, help='Number of frame before saving weights', dest='save_freq',
                     type=int)
-parser.add_argument('--eps_decay', default=8000000,
-                    help='Number of examples needed to decay epsilon to the lowest value', dest='eps_decay', type=int)
-parser.add_argument('--lr_decay', default=2 * 80000000,
-                    help='Number of examples needed to decay lr to the lowest value', dest='lr_decay', type=int)
+parser.add_argument('--eps_decay', default=4000000,
+                    help='Number of frames needed to decay epsilon to the lowest value', dest='eps_decay', type=int)
+parser.add_argument('--lr_decay', default=80000000,
+                    help='Number of frames needed to decay lr to the lowest value', dest='lr_decay', type=int)
 parser.add_argument('--queue_size', default=256, help='Size of queue holding agent experience', dest='queue_size',
                     type=int)
 parser.add_argument('--th_comp_fix', default=True,
@@ -50,76 +50,75 @@ def build_network(input_shape, output_shape):
 # -----
 
 class LearningAgent(object):
-    def __init__(self, action_space, replay_size=32, screen=(84, 84), switch_rate=200):
+    def __init__(self, action_space, batch_size=32, screen=(84, 84), swap_freq=200):
         from keras.optimizers import RMSprop
         # -----
         self.screen = screen
         self.input_depth = 1
         self.past_range = 3
         self.observation_shape = (self.input_depth * self.past_range,) + self.screen
-        self.replay_size = replay_size
+        self.batch_size = batch_size
 
-        self.action_value_train = build_network(self.observation_shape, action_space.n)
         self.action_value = build_network(self.observation_shape, action_space.n)
+        self.action_value.compile(optimizer='rmsprop', loss='mse')
 
-        self.action_value_train.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
-        self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
-
-        self.losses = deque(maxlen=100)
-        self.q_values = deque(maxlen=100)
-        self.switch_rate = switch_rate
-        self.weight_switch = self.switch_rate
-        self.unroll = np.arange(self.replay_size)
-        self.counter = 0
+        self.losses = deque(maxlen=25)
+        self.q_values = deque(maxlen=25)
+        self.swap_freq = swap_freq
+        self.swap_counter = self.swap_freq
+        self.unroll = np.arange(self.batch_size)
+        self.frames = 0
 
     def learn(self, last_observations, actions, rewards, observations, not_terminals, discount=0.99,
               learning_rate=0.001):
-        self.action_value_train.optimizer.lr.set_value(learning_rate)
-        self.counter += 1
+        self.action_value.optimizer.lr.set_value(learning_rate)
+        frames = len(last_observations)
+        self.frames += frames
         # -----
-        targets = self.action_value_train.predict_on_batch(last_observations)
-        freeze_q_vals = self.action_value.predict_on_batch(observations)
+        targets = self.action_value.predict_on_batch(last_observations)
+        q_values = self.action_value.predict_on_batch(observations)
         # -----
-        # equation = rewards + not_terminals * discount * np.argmax(freeze_q_vals)
+        # equation = rewards + not_terminals * discount * np.argmax(q_values)
         rewards = np.clip(rewards, -1., 1.)
         equation = not_terminals
-        equation *= np.max(freeze_q_vals, axis=1)
+        equation *= np.max(q_values, axis=1)
         equation *= discount
         targets[self.unroll, actions] = rewards + equation
         # -----
-        loss = self.action_value_train.train_on_batch(last_observations, targets)
+        loss = self.action_value.train_on_batch(last_observations, targets)
         self.losses.append(loss)
         self.q_values.append(np.mean(targets))
-        print('\rIter: %8d; Lr: %8.7f; Loss: %7.4f; Min: %7.4f; Max: %7.4f; Avg: %7.4f --- Q-value; Min: %7.4f; Max: %7.4f; Avg: %7.4f' % (
-                self.counter, learning_rate, loss, min(self.losses), max(self.losses), np.mean(self.losses),
+        print(
+            '\rFrames: %8d; Lr: %8.7f; Loss: %7.4f; Min: %7.4f; Max: %7.4f; Avg: %7.4f --- Q-value; Min: %7.4f; Max: %7.4f; Avg: %7.4f' % (
+                self.frames, learning_rate, loss, min(self.losses), max(self.losses), np.mean(self.losses),
                 np.min(self.q_values), np.max(self.q_values), np.mean(self.q_values)), end='')
-        self.weight_switch -= 1
-        if self.weight_switch < 0:
-            self.weight_switch = self.switch_rate
-            self.action_value.set_weights(self.action_value_train.get_weights())
+        self.swap_counter -= frames
+        if self.swap_counter < 0:
+            self.swap_counter += self.swap_freq
+            self.action_value.set_weights(self.action_value.get_weights())
             return True
         return False
 
 
-def learn_proc(mem_queue, weight_dict):
+def learn_proc(global_frame, mem_queue, weight_dict):
     import os
     pid = os.getpid()
     if args.th_fix:
         os.environ['THEANO_FLAGS'] = 'floatX=float32,device=gpu,nvcc.fastmath=False,lib.cnmem=0,' + \
                                      'compiledir=th_comp_learn'
     # -----
-    save_rate = args.save_rate
+    save_freq = args.save_freq
     learning_rate = args.learning_rate
     batch_size = args.batch_size
     checkpoint = args.checkpoint
     lr_decay = args.lr_decay
     # -----
     env = gym.make(args.game)
-    agent = LearningAgent(env.action_space, replay_size=args.batch_size, switch_rate=args.weight_switch)
+    agent = LearningAgent(env.action_space, batch_size=args.batch_size, swap_freq=args.swap_freq)
     # -----
     if checkpoint > 0:
-        agent.action_value_train.load_weights('model-%d.h5' % (checkpoint,))
-        agent.action_value.set_weights(agent.action_value_train.get_weights())
+        agent.action_value.load_weights('model-%d.h5' % (checkpoint,))
+        agent.action_value.set_weights(agent.action_value.get_weights())
     print(' %5d> Setting weights in dict' % (pid,))
     # -----
     weight_dict['update'] = 0
@@ -132,23 +131,25 @@ def learn_proc(mem_queue, weight_dict):
     not_term = np.zeros(batch_size)
     # -----
     index = 0
-    counter = checkpoint
-    agent.counter = counter / batch_size
+    agent.frames = checkpoint
+    save_counter = checkpoint % save_freq + save_freq
     while True:
         last_obs[index, ...], actions[index], rewards[index], obs[index, ...], not_term[index] = mem_queue.get()
         # -----
         index = (index + 1) % batch_size
         if index == 0:
-            lr = max(0.000000001, learning_rate * (1. - agent.counter * batch_size / lr_decay))
+            lr = max(0.00000001, learning_rate * (1. - agent.frames * batch_size / lr_decay))
             updated = agent.learn(last_obs, actions, rewards, obs, not_term, learning_rate=lr)
+            global_frame.value = agent.frames
             if updated:
-                print(' %5d> Updating weights in dict' % (pid,))
+                # print(' %5d> Updating weights in dict' % (pid,))
                 weight_dict['weights'] = agent.action_value.get_weights()
                 weight_dict['update'] += 1
         # -----
-        counter += 1
-        if counter % (save_rate * batch_size) == 0:
-            agent.action_value_train.save_weights('model-%d.h5' % (counter,), overwrite=True)
+        save_counter -= 1
+        if save_counter < 0:
+            save_counter += save_freq
+            agent.action_value.save_weights('model-%d.h5' % (agent.frames,), overwrite=True)
 
 
 class ActingAgent(object):
@@ -161,7 +162,7 @@ class ActingAgent(object):
         self.observation_shape = (self.input_depth * self.past_range,) + self.screen
 
         self.action_value = build_network(self.observation_shape, action_space.n)
-        self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
+        self.action_value.compile(optimizer='rmsprop', loss='mse')
 
         self.action_space = action_space
         self.observations = np.zeros(self.observation_shape)
@@ -190,26 +191,21 @@ class ActingAgent(object):
         return rgb2gray(imresize(data, self.screen))[None, ...]
 
 
-def generate_experience_proc(mem_queue, weight_dict, no, epsilon):
+def generate_experience_proc(global_frame, mem_queue, weight_dict, no, epsilon):
     import os
     pid = os.getpid()
     if args.th_fix:
         os.environ['THEANO_FLAGS'] = 'floatX=float32,device=gpu,nvcc.fastmath=True,lib.cnmem=0,' + \
                                      'compiledir=th_comp_act_' + str(no)
     # -----
-    moves = args.checkpoint
-    procs = args.processes
-    end = args.eps_decay
-    batch_size = args.batch_size
-    # -----
     print(' %5d> Process started with %6.3f' % (pid, epsilon))
     # -----
     env = gym.make(args.game)
     agent = ActingAgent(env.action_space)
 
-    if moves > 0:
+    if args.checkpoint > 0:
         print(' %5d> Loaded weights from file' % (pid,))
-        agent.action_value.load_weights('model-%d.h5' % (moves,))
+        agent.action_value.load_weights('model-%d.h5' % (args.checkpoint,))
     else:
         import time
         while 'weights' not in weight_dict:
@@ -217,44 +213,48 @@ def generate_experience_proc(mem_queue, weight_dict, no, epsilon):
         agent.action_value.set_weights(weight_dict['weights'])
         print(' %5d> Loaded weights from dict' % (pid,))
 
-    best_score = 0
-    last_update = 0
+    best_score, last_update, frames = 0, 0, 0
     avg_score = deque(maxlen=20)
+    stop_decay = global_frame.value > args.eps_decay
 
     while True:
         done = False
-        episode_reward = 0
-        noops = 0
+        episode_reward, noops, last_op = 0, 0, 0
         observation = env.reset()
         agent.init_episode(observation)
 
         # -----
         while not done:
-            moves += procs
-            decayed_epsilon = max(epsilon, epsilon + (1. - epsilon) * (end - moves) / end)
+            frames += 1
+            if not stop_decay:
+                frame_tmp = global_frame.value
+                decayed_epsilon = max(epsilon, epsilon + (1. - epsilon) * (
+                                        args.eps_decay - frame_tmp) / args.eps_decay)
+                stop_decay = frame_tmp > args.eps_decay
+            # -----
             action = agent.choose_action(decayed_epsilon)
             observation, reward, done, _ = env.step(action)
             episode_reward += reward
             best_score = max(best_score, episode_reward)
             # -----
-            if action == 0:
+            if action == last_op:
                 noops += 1
             else:
-                noops = 0
+                last_op, noops = action, 0
             # -----
-            if noops > 30:
+            if noops > 100:
                 break
             # -----
             mem_queue.put(agent.sars_data(action, reward, observation, not done))
             # -----
-            if moves % (2000 * procs) == 0:
-                print(' %5d> Epsilon: %9.6f; Best score: %4d; Avg score: %6.2f' % (
+            if frames % 2000 == 0:
+                print(' %5d> Epsilon: %9.6f; Best: %4d; Avg: %6.2f' % (
                     pid, decayed_epsilon, best_score, np.mean(avg_score)))
-            if moves % (batch_size * procs) == 0:
+            if frames % args.batch_size == 0:
                 update = weight_dict.get('update', 0)
                 if update > last_update:
                     last_update = update
-                    print(' %5d> Getting weights from dict' % (pid,))
+                    # print(' %5d> Getting weights from dict' % (pid,))
                     agent.action_value.set_weights(weight_dict['weights'])
         # -----
         avg_score.append(episode_reward)
@@ -268,16 +268,18 @@ def init_worker():
 def main():
     manager = Manager()
     weight_dict = manager.dict()
+    global_frame = manager.Value('i', args.checkpoint)
     mem_queue = manager.Queue(args.queue_size)
 
-    eps = [0.1, 0.05, 0.3, 0.5]
+    eps = [0.1, 0.01, 0.5]
     pool = Pool(args.processes + 1, init_worker)
 
     try:
         for i in range(args.processes):
-            pool.apply_async(generate_experience_proc, (mem_queue, weight_dict, i, eps[i % len(eps)]))
+            pool.apply_async(generate_experience_proc,
+                             args=(global_frame, mem_queue, weight_dict, i, eps[i % len(eps)]))
 
-        pool.apply_async(learn_proc, (mem_queue, weight_dict))
+        pool.apply_async(learn_proc, args=(global_frame, mem_queue, weight_dict))
 
         pool.close()
         pool.join()
