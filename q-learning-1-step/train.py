@@ -14,7 +14,7 @@ parser.add_argument('--processes', default=4, help='Number of processes that gen
                     dest='processes', type=int)
 parser.add_argument('--lr', default=0.0001, help='Learning rate', dest='learning_rate', type=float)
 parser.add_argument('--batch_size', default=20, help='Batch size to use during training', dest='batch_size', type=int)
-parser.add_argument('--swap_freq', default=100, help='Number of frames before swapping network weights',
+parser.add_argument('--swap_freq', default=10000, help='Number of frames before swapping network weights',
                     dest='swap_freq', type=int)
 parser.add_argument('--checkpoint', default=0, help='Iteration to resume training', dest='checkpoint', type=int)
 parser.add_argument('--save_freq', default=250000, help='Number of frame before saving weights', dest='save_freq',
@@ -60,7 +60,10 @@ class LearningAgent(object):
         self.batch_size = batch_size
 
         self.action_value = build_network(self.observation_shape, action_space.n)
+        self.action_value_freeze = build_network(self.observation_shape, action_space.n)
+
         self.action_value.compile(optimizer='rmsprop', loss='mse')
+        self.action_value_freeze.compile(optimizer='rmsprop', loss='mse')
 
         self.losses = deque(maxlen=25)
         self.q_values = deque(maxlen=25)
@@ -76,7 +79,7 @@ class LearningAgent(object):
         self.frames += frames
         # -----
         targets = self.action_value.predict_on_batch(last_observations)
-        q_values = self.action_value.predict_on_batch(observations)
+        q_values = self.action_value_freeze.predict_on_batch(observations)
         # -----
         # equation = rewards + not_terminals * discount * np.argmax(q_values)
         rewards = np.clip(rewards, -1., 1.)
@@ -95,7 +98,7 @@ class LearningAgent(object):
         self.swap_counter -= frames
         if self.swap_counter < 0:
             self.swap_counter += self.swap_freq
-            self.action_value.set_weights(self.action_value.get_weights())
+            self.action_value_freeze.set_weights(self.action_value.get_weights())
             return True
         return False
 
@@ -118,7 +121,7 @@ def learn_proc(global_frame, mem_queue, weight_dict):
     # -----
     if checkpoint > 0:
         agent.action_value.load_weights('model-%d.h5' % (checkpoint,))
-        agent.action_value.set_weights(agent.action_value.get_weights())
+        agent.action_value_freeze.set_weights(agent.action_value.get_weights())
     print(' %5d> Setting weights in dict' % (pid,))
     # -----
     weight_dict['update'] = 0
@@ -143,13 +146,13 @@ def learn_proc(global_frame, mem_queue, weight_dict):
             global_frame.value = agent.frames
             if updated:
                 # print(' %5d> Updating weights in dict' % (pid,))
-                weight_dict['weights'] = agent.action_value.get_weights()
+                weight_dict['weights'] = agent.action_value_freeze.get_weights()
                 weight_dict['update'] += 1
         # -----
         save_counter -= 1
         if save_counter < 0:
             save_counter += save_freq
-            agent.action_value.save_weights('model-%d.h5' % (agent.frames,), overwrite=True)
+            agent.action_value_freeze.save_weights('model-%d.h5' % (agent.frames,), overwrite=True)
 
 
 class ActingAgent(object):

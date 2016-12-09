@@ -4,6 +4,7 @@ from multiprocessing import *
 from collections import deque
 import gym
 import numpy as np
+import h5py
 import argparse
 
 # -----
@@ -11,22 +12,19 @@ parser = argparse.ArgumentParser(description='Training model')
 parser.add_argument('--game', default='Breakout-v0', help='OpenAI gym environment name', dest='game', type=str)
 parser.add_argument('--processes', default=4, help='Number of processes that generate experience for agent',
                     dest='processes', type=int)
-parser.add_argument('--lr', default=0.0001, help='Learning rate', dest='learning_rate', type=float)
+parser.add_argument('--lr', default=0.001, help='Learning rate', dest='learning_rate', type=float)
+parser.add_argument('--steps', default=80000000, help='Number of frames to decay learning rate', dest='steps', type=int)
 parser.add_argument('--batch_size', default=20, help='Batch size to use during training', dest='batch_size', type=int)
-parser.add_argument('--swap_freq', default=10000, help='Number of frames before swapping network weights',
+parser.add_argument('--swap_freq', default=100, help='Number of frames before swapping network weights',
                     dest='swap_freq', type=int)
-parser.add_argument('--checkpoint', default=0, help='Iteration to resume training', dest='checkpoint', type=int)
-parser.add_argument('--save_freq', default=250000, help='Number of frame before saving weights', dest='save_freq',
+parser.add_argument('--checkpoint', default=0, help='Frame to resume training', dest='checkpoint', type=int)
+parser.add_argument('--save_freq', default=250000, help='Number of frames before saving weights', dest='save_freq',
                     type=int)
-parser.add_argument('--eps_decay', default=4000000,
-                    help='Number of frames needed to decay epsilon to the lowest value', dest='eps_decay', type=int)
-parser.add_argument('--lr_decay', default=80000000,
-                    help='Number of frames needed to decay lr to the lowest value', dest='lr_decay', type=int)
 parser.add_argument('--queue_size', default=256, help='Size of queue holding agent experience', dest='queue_size',
                     type=int)
-parser.add_argument('--n_step', default=5, help='Number of steps in Q-learning', dest='n_step', type=int)
-parser.add_argument('--th_comp_fix', default=True,
-                    help='Sets different Theano compiledir for each process', dest='th_fix', type=bool)
+parser.add_argument('--n_step', default=5, help='Number of steps', dest='n_step', type=int)
+parser.add_argument('--reward_scale', default=1., dest='reward_scale', type=float)
+parser.add_argument('--beta', default=0.01, dest='beta', type=float)
 # -----
 args = parser.parse_args()
 
@@ -35,17 +33,44 @@ args = parser.parse_args()
 
 
 def build_network(input_shape, output_shape):
-    from keras.models import Sequential
-    from keras.layers import InputLayer, Convolution2D, Flatten, Dense
+    from keras.models import Model
+    from keras.layers import Input, Convolution2D, Flatten, Dense
     # -----
-    return Sequential([
-        InputLayer(input_shape=input_shape),
-        Convolution2D(16, 8, 8, subsample=(4, 4), activation='relu'),
-        Convolution2D(32, 4, 4, subsample=(2, 2), activation='relu'),
-        Flatten(),
-        Dense(256, activation='relu'),
-        Dense(output_shape, activation='linear'),
-    ])
+    state = Input(shape=input_shape)
+    h = Convolution2D(16, 8, 8, subsample=(4, 4), activation='relu', dim_ordering='th')(state)
+    h = Convolution2D(32, 4, 4, subsample=(2, 2), activation='relu', dim_ordering='th')(h)
+    h = Flatten()(h)
+    h = Dense(256, activation='relu')(h)
+
+    value = Dense(1, activation='linear', name='value')(h)
+    policy = Dense(output_shape, activation='softmax', name='policy')(h)
+
+    value_network = Model(input=state, output=value)
+    policy_network = Model(input=state, output=policy)
+
+    adventage = Input(shape=(1,))
+    train_network = Model(input=[state, adventage], output=[value, policy])
+
+    return value_network, policy_network, train_network, adventage
+
+
+def policy_loss(adventage=0., beta=0.01):
+    from keras import backend as K
+
+    def loss(y_true, y_pred):
+        return -K.sum(K.log(K.sum(y_true * y_pred, axis=-1) + K.epsilon()) * K.flatten(adventage)) + \
+               beta * K.sum(y_pred * K.log(y_pred + K.epsilon()))
+
+    return loss
+
+
+def value_loss():
+    from keras import backend as K
+
+    def loss(y_true, y_pred):
+        return 0.5 * K.sum(K.square(y_true - y_pred))
+
+    return loss
 
 
 # -----
@@ -60,98 +85,119 @@ class LearningAgent(object):
         self.observation_shape = (self.input_depth * self.past_range,) + self.screen
         self.batch_size = batch_size
 
-        self.action_value = build_network(self.observation_shape, action_space.n)
-        self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')
+        _, _, self.train_net, adventage = build_network(self.observation_shape, action_space.n)
 
-        self.losses = deque(maxlen=25)
-        self.q_values = deque(maxlen=25)
+        self.train_net.compile(optimizer=RMSprop(epsilon=0.1, rho=0.99),
+                               loss=[value_loss(), policy_loss(adventage, args.beta)])
+
+        self.pol_loss = deque(maxlen=25)
+        self.val_loss = deque(maxlen=25)
+        self.values = deque(maxlen=25)
+        self.entropy = deque(maxlen=25)
         self.swap_freq = swap_freq
         self.swap_counter = self.swap_freq
         self.unroll = np.arange(self.batch_size)
-        self.frames = 0
+        self.targets = np.zeros((self.batch_size, action_space.n))
+        self.counter = 0
 
     def learn(self, last_observations, actions, rewards, learning_rate=0.001):
-        self.action_value.optimizer.lr.set_value(learning_rate)
+        import keras.backend as K
+        K.set_value(self.train_net.optimizer.lr, learning_rate)
         frames = len(last_observations)
-        self.frames += frames
+        self.counter += frames
         # -----
-        targets = self.action_value.predict_on_batch(last_observations)
+        values, policy = self.train_net.predict([last_observations, self.unroll])
         # -----
-        targets[self.unroll, actions] = rewards
+        self.targets.fill(0.)
+        adventage = rewards - values.flatten()
+        self.targets[self.unroll, actions] = 1.
         # -----
-        loss = self.action_value.train_on_batch(last_observations, targets)
-        self.losses.append(loss)
-        self.q_values.append(np.mean(targets))
-        print('\rIter: %8d; Lr: %8.7f; Loss: %7.4f; Min: %7.4f; Max: %7.4f; Avg: %7.4f --- Q-value; Min: %7.4f; Max: %7.4f; Avg: %7.4f' % (
-            self.frames, learning_rate, loss, min(self.losses), max(self.losses), np.mean(self.losses),
-            np.min(self.q_values), np.max(self.q_values), np.mean(self.q_values)), end='')
-        self.swap_freq -= frames
-        if self.swap_freq < 0:
-            self.swap_freq += self.swap_freq
+        loss = self.train_net.train_on_batch([last_observations, adventage], [rewards, self.targets])
+        entropy = np.mean(-policy * np.log(policy + 0.00000001))
+        self.pol_loss.append(loss[2])
+        self.val_loss.append(loss[1])
+        self.entropy.append(entropy)
+        self.values.append(np.mean(values))
+        min_val, max_val, avg_val = min(self.values), max(self.values), np.mean(self.values)
+        print('\rFrames: %8d; Policy-Loss: %10.6f; Avg: %10.6f '
+              '--- Value-Loss: %10.6f; Avg: %10.6f '
+              '--- Entropy: %7.6f; Avg: %7.6f '
+              '--- V-value; Min: %6.3f; Max: %6.3f; Avg: %6.3f' % (
+                  self.counter,
+                  loss[2], np.mean(self.pol_loss),
+                  loss[1], np.mean(self.val_loss),
+                  entropy, np.mean(self.entropy),
+                  min_val, max_val, avg_val), end='')
+        # -----
+        self.swap_counter -= frames
+        if self.swap_counter < 0:
+            self.swap_counter += self.swap_freq
             return True
         return False
 
 
-def learn_proc(global_frame, mem_queue, weight_dict):
+def learn_proc(mem_queue, weight_dict):
     import os
     pid = os.getpid()
-    if args.th_fix:
-        os.environ['THEANO_FLAGS'] = 'floatX=float32,device=gpu,nvcc.fastmath=False,lib.cnmem=0,' + \
-                                     'compiledir=th_comp_learn'
+    os.environ['THEANO_FLAGS'] = 'floatX=float32,device=gpu,nvcc.fastmath=False,lib.cnmem=0.5,' + \
+                                 'compiledir=th_comp_learn'
+    # -----
+    print(' %5d> Learning process' % (pid,))
     # -----
     save_freq = args.save_freq
     learning_rate = args.learning_rate
     batch_size = args.batch_size
     checkpoint = args.checkpoint
-    lr_decay = args.lr_decay
+    steps = args.steps
     # -----
     env = gym.make(args.game)
     agent = LearningAgent(env.action_space, batch_size=args.batch_size, swap_freq=args.swap_freq)
     # -----
     if checkpoint > 0:
         print(' %5d> Loading weights from file' % (pid,))
-        agent.action_value.load_weights('model-%d.h5' % (checkpoint,))
+        agent.train_net.load_weights('model-%s-%d.h5' % (args.game, checkpoint,))
         # -----
-    weight_dict['update'] = 0
-    weight_dict['weights'] = agent.action_value.get_weights()
     print(' %5d> Setting weights in dict' % (pid,))
+    weight_dict['update'] = 0
+    weight_dict['weights'] = agent.train_net.get_weights()
     # -----
     last_obs = np.zeros((batch_size,) + agent.observation_shape)
     actions = np.zeros(batch_size, dtype=np.int32)
     rewards = np.zeros(batch_size)
     # -----
     idx = 0
-    agent.frames = checkpoint
+    agent.counter = checkpoint
     save_counter = checkpoint % save_freq + save_freq
     while True:
         # -----
         last_obs[idx, ...], actions[idx], rewards[idx] = mem_queue.get()
         idx = (idx + 1) % batch_size
         if idx == 0:
-            lr = max(0.000000001, learning_rate * (1. - agent.frames / lr_decay))
+            lr = max(0.00000001, (steps - agent.counter) / steps * learning_rate)
             updated = agent.learn(last_obs, actions, rewards, learning_rate=lr)
-            global_frame.value = agent.frames
             if updated:
                 # print(' %5d> Updating weights in dict' % (pid,))
-                weight_dict['weights'] = agent.action_value.get_weights()
+                weight_dict['weights'] = agent.train_net.get_weights()
                 weight_dict['update'] += 1
         # -----
         save_counter -= 1
-        if save_counter % save_freq == 0:
-            agent.action_value.save_weights('model-%d.h5' % (agent.frames,), overwrite=True)
+        if save_counter < 0:
+            save_counter += save_freq
+            agent.train_net.save_weights('model-%s-%d.h5' % (args.game, agent.counter,), overwrite=True)
 
 
 class ActingAgent(object):
     def __init__(self, action_space, screen=(84, 84), n_step=8, discount=0.99):
-        from keras.optimizers import RMSprop
-        # -----
         self.screen = screen
         self.input_depth = 1
         self.past_range = 3
         self.observation_shape = (self.input_depth * self.past_range,) + self.screen
 
-        self.action_value = build_network(self.observation_shape, action_space.n)
-        self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')  # clipnorm=1.
+        self.value_net, self.policy_net, self.load_net, adv = build_network(self.observation_shape, action_space.n)
+
+        self.value_net.compile(optimizer='rmsprop', loss='mse')
+        self.policy_net.compile(optimizer='rmsprop', loss='categorical_crossentropy')
+        self.load_net.compile(optimizer='rmsprop', loss='mse', loss_weights=[0.5, 1.])  # dummy loss
 
         self.action_space = action_space
         self.observations = np.zeros(self.observation_shape)
@@ -177,6 +223,7 @@ class ActingAgent(object):
     def sars_data(self, action, reward, observation, terminal, mem_queue):
         self.save_observation(observation)
         reward = np.clip(reward, -1., 1.)
+        # reward /= args.reward_scale
         # -----
         self.n_step_observations.appendleft(self.last_observations)
         self.n_step_actions.appendleft(action)
@@ -186,17 +233,15 @@ class ActingAgent(object):
         if terminal or self.counter >= self.n_step:
             r = 0.
             if not terminal:
-                r = np.max(self.action_value.predict(self.observations[None, ...]))
+                r = self.value_net.predict(self.observations[None, ...])[0]
             for i in range(self.counter):
                 r = self.n_step_rewards[i] + self.discount * r
                 mem_queue.put((self.n_step_observations[i], self.n_step_actions[i], r))
             self.reset()
 
-    def choose_action(self, epsilon=0.0):
-        if np.random.random() < epsilon:
-            return self.action_space.sample()
-        else:
-            return np.argmax(self.action_value.predict(self.observations[None, ...]))
+    def choose_action(self):
+        policy = self.policy_net.predict(self.observations[None, ...])[0]
+        return np.random.choice(np.arange(self.action_space.n), p=policy)
 
     def save_observation(self, observation):
         self.last_observations = self.observations[...]
@@ -207,75 +252,59 @@ class ActingAgent(object):
         return rgb2gray(imresize(data, self.screen))[None, ...]
 
 
-def generate_experience_proc(global_frame, mem_queue, weight_dict, no, epsilon):
+def generate_experience_proc(mem_queue, weight_dict, no):
     import os
     pid = os.getpid()
-    if args.th_fix:
-        os.environ['THEANO_FLAGS'] = 'floatX=float32,device=gpu,nvcc.fastmath=True,lib.cnmem=0,' + \
-                                     'compiledir=th_comp_act_' + str(no)
+    os.environ['THEANO_FLAGS'] = 'floatX=float32,device=gpu,nvcc.fastmath=True,lib.cnmem=0.05,' + \
+                                 'compiledir=th_comp_act_' + str(no)
     # -----
+    print(' %5d> Process started' % (pid,))
+    # -----
+    frames = 0
     batch_size = args.batch_size
-    # -----
-    print(' %5d> Process started with %6.3f' % (pid, epsilon))
     # -----
     env = gym.make(args.game)
     agent = ActingAgent(env.action_space, n_step=args.n_step)
 
-    if args.checkpoint > 0:
+    if frames > 0:
         print(' %5d> Loaded weights from file' % (pid,))
-        agent.action_value.load_weights('model-%d.h5' % (args.checkpoint,))
+        agent.load_net.load_weights('model-%s-%d.h5' % (args.game, frames))
     else:
         import time
         while 'weights' not in weight_dict:
             time.sleep(0.1)
-        agent.action_value.set_weights(weight_dict['weights'])
+        agent.load_net.set_weights(weight_dict['weights'])
         print(' %5d> Loaded weights from dict' % (pid,))
 
-    best_score, last_update, frames = 0, 0, 0
-    avg_score = deque(maxlen=20)
-    stop_decay = global_frame.value > args.eps_decay
+    best_score = 0
+    avg_score = deque([0], maxlen=25)
 
+    last_update = 0
     while True:
         done = False
         episode_reward = 0
-        last_op, op_count = 0, 0
         observation = env.reset()
         agent.init_episode(observation)
 
         # -----
         while not done:
             frames += 1
-            if not stop_decay:
-                frame_tmp = global_frame.value
-                decayed_epsilon = max(epsilon, epsilon + (1. - epsilon) * (
-                                        args.eps_decay - frame_tmp) / args.eps_decay)
-                stop_decay = frame_tmp > args.eps_decay
-            # -----
-            action = agent.choose_action(decayed_epsilon)
+            action = agent.choose_action()
             observation, reward, done, _ = env.step(action)
             episode_reward += reward
             best_score = max(best_score, episode_reward)
             # -----
             agent.sars_data(action, reward, observation, done, mem_queue)
             # -----
-            if action == last_op:
-                op_count += 1
-            else:
-                op_count, last_op = 0, action
-            # -----
-            if op_count > 100:
-                agent.reset()  # reset agent memory
-                break
-            # -----
             if frames % 2000 == 0:
-                print(' %5d> Epsilon: %9.6f; Best score: %4d; Avg: %9.3f' % (
-                    pid, decayed_epsilon, best_score, np.mean(avg_score)))
+                print(' %5d> Best: %4d; Avg: %6.2f; Max: %4d' % (
+                    pid, best_score, np.mean(avg_score), np.max(avg_score)))
             if frames % batch_size == 0:
                 update = weight_dict.get('update', 0)
                 if update > last_update:
                     last_update = update
                     # print(' %5d> Getting weights from dict' % (pid,))
-                    agent.action_value.set_weights(weight_dict['weights'])
+                    agent.load_net.set_weights(weight_dict['weights'])
         # -----
         avg_score.append(episode_reward)
 
@@ -288,18 +317,15 @@ def init_worker():
 def main():
     manager = Manager()
     weight_dict = manager.dict()
-    global_frame = manager.Value('i', args.checkpoint)
     mem_queue = manager.Queue(args.queue_size)
 
-    eps = [0.1, 0.01, 0.5]
-    pool = Pool(args.processes + 1, init_worker)
+    pool = Pool(args.processes, init_worker)
 
     try:
         for i in range(args.processes):
-            pool.apply_async(generate_experience_proc,
-                             args=(global_frame, mem_queue, weight_dict, i, eps[i % len(eps)]))
+            pool.apply_async(generate_experience_proc, (mem_queue, weight_dict, i))
 
-        pool.apply_async(learn_proc, args=(global_frame, mem_queue, weight_dict))
+        learn_proc(mem_queue, weight_dict)
 
         pool.close()
         pool.join()
