@@ -2,7 +2,7 @@
 This is a simple variation of [asynchronous reinforcement learning](http://arxiv.org/pdf/1602.01783v1.pdf) written in Python with Keras (Theano backend). Instead of many threads training at the same time there are many processes generating experience for a single agent to learn from. 
 
 ### Explanation
-There are many processes (tested with 4, it should work better with more) which are creating experience and sending it to the shared queue. Queue is limited in length (tested with 256) to stop individual processes from excessively generating experience with old weights. Learning process draws from queue samples in batches and learns on them. Network weights are swapped relatively fast to keep them updated.
+There are many processes (tested with 4, it should work better with more in case of Q-learning methods) which are creating experience and sending it to the shared queue. Queue is limited in length (tested with 256) to stop individual processes from excessively generating experience with old weights. Learning process draws from queue samples in batches and learns on them. In A3C network weights are swapped relatively fast to keep them updated.
 
 ### Currently implemented and working methods
 * [1-step Q-learning](https://github.com/Grzego/async-rl/tree/master/q-learning-1-step)
