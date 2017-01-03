@@ -85,9 +85,9 @@ class LearningAgent(object):
         print('\rIter: %8d; Lr: %8.7f; Loss: %7.4f; Min: %7.4f; Max: %7.4f; Avg: %7.4f --- Q-value; Min: %7.4f; Max: %7.4f; Avg: %7.4f' % (
             self.frames, learning_rate, loss, min(self.losses), max(self.losses), np.mean(self.losses),
             np.min(self.q_values), np.max(self.q_values), np.mean(self.q_values)), end='')
-        self.swap_freq -= frames
-        if self.swap_freq < 0:
-            self.swap_freq += self.swap_freq
+        self.swap_counter -= frames
+        if self.swap_counter < 0:
+            self.swap_counter += self.swap_freq
             return True
         return False
 

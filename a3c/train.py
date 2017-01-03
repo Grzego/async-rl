@@ -139,7 +139,7 @@ class LearningAgent(object):
 def learn_proc(mem_queue, weight_dict):
     import os
     pid = os.getpid()
-    os.environ['THEANO_FLAGS'] = 'floatX=float32,device=gpu,nvcc.fastmath=False,lib.cnmem=0.5,' + \
+    os.environ['THEANO_FLAGS'] = 'floatX=float32,device=gpu,nvcc.fastmath=False,lib.cnmem=0.3,' + \
                                  'compiledir=th_comp_learn'
     # -----
     print(' %5d> Learning process' % (pid,))
@@ -255,7 +255,7 @@ class ActingAgent(object):
 def generate_experience_proc(mem_queue, weight_dict, no):
     import os
     pid = os.getpid()
-    os.environ['THEANO_FLAGS'] = 'floatX=float32,device=gpu,nvcc.fastmath=True,lib.cnmem=0.05,' + \
+    os.environ['THEANO_FLAGS'] = 'floatX=float32,device=gpu,nvcc.fastmath=True,lib.cnmem=0,' + \
                                  'compiledir=th_comp_act_' + str(no)
     # -----
     print(' %5d> Process started' % (pid,))
@@ -283,6 +283,7 @@ def generate_experience_proc(mem_queue, weight_dict, no):
     while True:
         done = False
         episode_reward = 0
+        op_last, op_count = 0, 0
         observation = env.reset()
         agent.init_episode(observation)
 
@@ -295,6 +296,10 @@ def generate_experience_proc(mem_queue, weight_dict, no):
             best_score = max(best_score, episode_reward)
             # -----
             agent.sars_data(action, reward, observation, done, mem_queue)
+            # -----
+            op_count = 0 if op_last != action else op_count + 1
+            done = done or op_count >= 100
+            op_last = action
             # -----
             if frames % 2000 == 0:
                 print(' %5d> Best: %4d; Avg: %6.2f; Max: %4d' % (
@@ -319,13 +324,13 @@ def main():
     weight_dict = manager.dict()
     mem_queue = manager.Queue(args.queue_size)
 
-    pool = Pool(args.processes, init_worker)
+    pool = Pool(args.processes + 1, init_worker)
 
     try:
         for i in range(args.processes):
             pool.apply_async(generate_experience_proc, (mem_queue, weight_dict, i))
 
-        learn_proc(mem_queue, weight_dict)
+        pool.apply_async(learn_proc, (mem_queue, weight_dict))
 
         pool.close()
         pool.join()
