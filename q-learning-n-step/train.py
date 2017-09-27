@@ -35,17 +35,16 @@ args = parser.parse_args()
 
 
 def build_network(input_shape, output_shape):
-    from keras.models import Sequential
-    from keras.layers import InputLayer, Convolution2D, Flatten, Dense
-    # -----
-    return Sequential([
-        InputLayer(input_shape=input_shape),
-        Convolution2D(16, 8, 8, subsample=(4, 4), activation='relu'),
-        Convolution2D(32, 4, 4, subsample=(2, 2), activation='relu'),
-        Flatten(),
-        Dense(256, activation='relu'),
-        Dense(output_shape, activation='linear'),
-    ])
+    from keras.models import Model
+    from keras.layers import Input, Conv2D, Flatten, Dense
+
+    x = Input(shape=input_shape)
+    h = Conv2D(16, kernel_size=(8, 8), strides=(4, 4), activation='relu', data_format='channels_first')(x)
+    h = Conv2D(32, kernel_size=(4, 4), strides=(2, 2), activation='relu', data_format='channels_first')(h)
+    h = Flatten()(h)
+    h = Dense(256, activation='relu')(h)
+    v = Dense(output_shape, activation='linear')(h)
+    return Model(inputs=x, outputs=v)
 
 
 # -----

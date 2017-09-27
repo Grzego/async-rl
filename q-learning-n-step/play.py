@@ -5,10 +5,21 @@ import numpy as np
 import argparse
 
 
+def build_network(input_shape, output_shape):
+    from keras.models import Model
+    from keras.layers import Input, Conv2D, Flatten, Dense
+
+    x = Input(shape=input_shape)
+    h = Conv2D(16, kernel_size=(8, 8), strides=(4, 4), activation='relu', data_format='channels_first')(x)
+    h = Conv2D(32, kernel_size=(4, 4), strides=(2, 2), activation='relu', data_format='channels_first')(h)
+    h = Flatten()(h)
+    h = Dense(256, activation='relu')(h)
+    v = Dense(output_shape, activation='linear')(h)
+    return Model(inputs=x, outputs=v)
+
+
 class ActingAgent(object):
-    def __init__(self, action_space, screen=(84, 84), compilation_lock=None):
-        from keras.models import Sequential
-        from keras.layers import InputLayer, Convolution2D, Flatten, Dense
+    def __init__(self, action_space, screen=(84, 84)):
         from keras.optimizers import RMSprop
 
         self.screen = screen
@@ -17,20 +28,8 @@ class ActingAgent(object):
         self.replay_size = 32
         self.observation_shape = (self.input_depth * self.past_range,) + self.screen
 
-        self.action_value = Sequential([
-            InputLayer(input_shape=self.observation_shape),
-            Convolution2D(16, 8, 8, subsample=(4, 4), activation='relu'),
-            Convolution2D(32, 4, 4, subsample=(2, 2), activation='relu'),
-            Flatten(),
-            Dense(256, activation='relu'),
-            Dense(action_space.n, activation='linear'),
-        ])
-
-        if compilation_lock:
-            with compilation_lock:
-                self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')  # clipnorm=1.
-        else:
-            self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')  # clipnorm=1.
+        self.action_value = build_network(self.observation_shape, action_space.n)
+        self.action_value.compile(optimizer=RMSprop(clipnorm=1.), loss='mse')  # clipnorm=1.
 
         self.action_space = action_space
         self.observations = np.zeros((self.input_depth * self.past_range,) + screen)

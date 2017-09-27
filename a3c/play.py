@@ -10,8 +10,8 @@ import argparse
 
 def build_network(input_shape, output_shape):
     state = Input(shape=input_shape)
-    h = Convolution2D(16, 8, 8, subsample=(4, 4), activation='relu')(state)
-    h = Convolution2D(32, 4, 4, subsample=(2, 2), activation='relu')(h)
+    h = Conv2D(16, kernel_size=(8, 8), strides=(4, 4), activation='relu', data_format='channels_first')(state)
+    h = Conv2D(32, kernel_size=(4, 4), strides=(2, 2), activation='relu', data_format='channels_first')(h)
     h = Flatten()(h)
     h = Dense(256, activation='relu')(h)
 
@@ -22,7 +22,7 @@ def build_network(input_shape, output_shape):
     policy_network = Model(input=state, output=policy)
 
     adventage = Input(shape=(1,))
-    train_network = Model(input=state, output=[value, policy])
+    train_network = Model(inputs=state, outputs=[value, policy])
 
     return value_network, policy_network, train_network, adventage
 
