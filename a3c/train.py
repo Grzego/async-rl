@@ -77,10 +77,7 @@ def value_loss():
 
 class LearningAgent(object):
     def __init__(self, action_space, batch_size=32, screen=(84, 84), swap_freq=200):
-        try:
-            from keras.optimizers import RMSprop
-        except Exception as e:
-            print(e)
+        from keras.optimizers import RMSprop		
         # -----
         self.screen = screen
         self.input_depth = 1
